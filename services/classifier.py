@@ -41,7 +41,7 @@ class EmailClassifier:
         self.model = model
         self.rate_delay = rate_delay
         self.batch_size = batch_size
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = os.getenv("OPENAI_API_KEY")
         self.client: Optional[OpenAI] = OpenAI(api_key=api_key) if api_key else None
         if not api_key:
             logger.warning("OPENAI_API_KEY not set; classifier will fall back to 'other'.")

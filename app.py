@@ -1,5 +1,7 @@
 """Pare Flask application entrypoint."""
 from __future__ import annotations
+import os
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 
@@ -20,6 +22,9 @@ from models import (
 from services.classifier import EmailClassifier
 from services.google_auth import GoogleAuthService
 from services.gmail_sync import sync_recent_emails
+
+from dotenv import load_dotenv
+load_dotenv()
 
 
 def create_app() -> Flask:
@@ -201,6 +206,5 @@ def create_app() -> Flask:
 app = create_app()
 
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=os.environ.get("FLASK_DEBUG", "False").lower() == "true")
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=os.getenv("FLASK_DEBUG", "False").lower() == "true")

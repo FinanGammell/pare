@@ -101,20 +101,22 @@ DDL_STATEMENTS = [
 
 def get_connection() -> sqlite3.Connection:
     """Return a cached SQLite connection stored on the Flask `g` object."""
-    conn = g.get(_CONNECTION_KEY)
+    conn = getattr(g, _CONNECTION_KEY, None)
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
-        g[_CONNECTION_KEY] = conn
+        setattr(g, _CONNECTION_KEY, conn)
     return conn
 
 
 def close_connection(_: Optional[BaseException] = None) -> None:
     """Close the cached SQLite connection if it exists."""
-    conn = g.pop(_CONNECTION_KEY, None)
+    conn = getattr(g, _CONNECTION_KEY, None)
     if conn is not None:
         conn.close()
+        if hasattr(g, _CONNECTION_KEY):
+            delattr(g, _CONNECTION_KEY)
 
 
 @contextmanager

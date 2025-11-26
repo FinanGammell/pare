@@ -32,9 +32,11 @@ instance/
 *.sqlite3
 *.db
 
-# Environment
+# Environment variables
 .env
 .env.local
+.env.*   # ignore any hidden env-like files
+*.env    # ignore any file ending in .env
 
 # IDE
 .vscode/
