@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4">
+  <div>
+    <h1 class="h3 mb-1">Meetings</h1>
+    <p class="text-muted mb-0">AI-detected meetings with structured metadata.</p>
+  </div>
+</div>
+
+{% if meetings %}
+<div class="row g-4">
+  {% for meeting in meetings %}
+  <div class="col-md-6 col-lg-4">
+    <div class="card shadow-sm border-0 h-100">
+      <div class="card-body d-flex flex-column">
+        <h2 class="h5">{{ meeting.title or meeting.subject or 'Untitled Meeting' }}</h2>
+        <p class="text-muted small mb-2">From {{ meeting.sender or 'Unknown sender' }}</p>
+        <p class="mb-1"><strong>When:</strong> {{ meeting.start_time or meeting.email_date or 'TBD' }}</p>
+        {% if meeting.end_time %}
+        <p class="mb-1"><strong>Ends:</strong> {{ meeting.end_time }}</p>
+        {% endif %}
+        <p class="mb-1"><strong>Location:</strong> {{ meeting.location or 'Not provided' }}</p>
+        {% set attendees = meeting.attendees_json.get('attendees', []) if meeting.attendees_json else [] %}
+        {% if attendees %}
+        <p class="mb-1"><strong>Attendees:</strong> {{ attendees | join(', ') }}</p>
+        {% endif %}
+        <div class="mt-auto pt-3">
+          <a class="btn btn-outline-primary w-100" target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/{{ meeting.gmail_message_id }}">Open email</a>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info">No meetings have been detected yet. Run a sync or process cycle to populate this view.</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,7 @@
+{
+  "include": ["."],
+  "typeCheckingMode": "basic",
+  "extraPaths": [
+    "/Users/finangammell/Library/Python/3.11/lib/python/site-packages"
+  ]
+}
