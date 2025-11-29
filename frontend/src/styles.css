@@ -577,6 +577,11 @@ body {
   .login-container {
     gap: 2rem;
   }
+
+  /* Analytics charts responsive */
+  .card > div[style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+  }
 }
 
 
