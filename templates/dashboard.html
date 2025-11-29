@@ -5,11 +5,47 @@
     <h1 class="h3 mb-1">Dashboard</h1>
     <p class="text-muted mb-0">Stay on top of meetings, tasks, and inbox hygiene.</p>
   </div>
-  <div>
-    <a class="btn btn-outline-secondary me-2" href="{{ url_for('sync_mailbox') }}">Sync Gmail</a>
-    <a class="btn btn-primary" href="{{ url_for('process_emails') }}">Process Emails</a>
+  <div class="d-flex gap-2">
+    <form method="POST" action="{{ url_for('remove_duplicates_route') }}" onsubmit="return confirm('Remove duplicate emails? This will keep only the most recent copy of each email.');">
+      <button type="submit" class="btn btn-outline-warning btn-sm">Remove Duplicates</button>
+    </form>
+    <form method="POST" action="{{ url_for('clear_data') }}" onsubmit="return confirm('Are you sure you want to clear all your data? This cannot be undone!');">
+      <button type="submit" class="btn btn-outline-danger btn-sm">Clear All Data</button>
+    </form>
   </div>
 </div>
+
+{% if sync_stats %}
+<div class="alert alert-info mb-4">
+  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div>
+      <strong>Email Sync Status:</strong>
+      <span>{{ sync_stats.total_emails or 0 }} emails synced</span>
+      <span class="mx-2">•</span>
+      <span>{{ sync_stats.processed_emails or 0 }} processed</span>
+      {% if sync_stats.new_count and sync_stats.new_count > 0 %}
+      <span class="mx-2">•</span>
+      <span class="text-success">{{ sync_stats.new_count }} new</span>
+      {% endif %}
+      {% if sync_stats.newly_processed and sync_stats.newly_processed > 0 %}
+      <span class="mx-2">•</span>
+      <span class="text-success">{{ sync_stats.newly_processed }} newly processed</span>
+      {% endif %}
+    </div>
+    {% if sync_stats.unprocessed_emails and sync_stats.unprocessed_emails > 0 %}
+    <div class="text-warning">
+      <small>{{ sync_stats.unprocessed_emails }} pending processing</small>
+    </div>
+    {% endif %}
+  </div>
+  {% if sync_stats.total_emails and sync_stats.total_emails > 0 %}
+  <div class="progress mt-2" style="height: 6px;">
+    {% set processed_pct = ((sync_stats.processed_emails or 0) / sync_stats.total_emails * 100) | round %}
+    <div class="progress-bar bg-success" role="progressbar" style="width: {{ processed_pct }}%" aria-valuenow="{{ processed_pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="row g-3 mb-4">
   <div class="col-md-3">
@@ -57,10 +93,17 @@
         {% if meetings %}
         <div class="list-group list-group-flush">
           {% for meeting in meetings %}
-          <div class="list-group-item px-0">
-            <p class="fw-semibold mb-1">{{ meeting.title or meeting.subject or 'Untitled Meeting' }}</p>
-            <p class="text-muted small mb-1">{{ meeting.start_time or meeting.date or 'TBD' }}{% if meeting.location %} • {{ meeting.location }}{% endif %}</p>
-            <a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/{{ meeting.gmail_message_id }}">Open email</a>
+          <div class="list-group-item px-0 position-relative">
+            <form method="POST" action="{{ url_for('hide_email_route', email_id=meeting.email_id) }}" class="position-absolute top-0 end-0" style="z-index: 10;">
+              <button type="submit" class="btn btn-sm btn-link text-muted p-1" style="line-height: 1;" title="Hide">×</button>
+            </form>
+            <p class="fw-semibold mb-1 pe-4">{{ (meeting.title or meeting.subject or 'Untitled Meeting') | unescape }}</p>
+            <p class="text-muted small mb-1">{{ meeting.start_time or meeting.date or 'TBD' }}{% if meeting.location %} • {{ meeting.location[:30] }}{% if meeting.location|length > 30 %}...{% endif %}{% endif %}</p>
+            {% set attendees = meeting.attendees_json.get('attendees', []) if meeting.attendees_json else [] %}
+            {% if attendees %}
+            <p class="text-muted small mb-1"><strong>Attendees:</strong> {{ attendees[:5] | join(', ') }}{% if attendees|length > 5 %}...{% endif %}</p>
+            {% endif %}
+            <a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="{{ url_for('open_email', gmail_message_id=meeting.gmail_message_id) }}">Open email</a>
           </div>
           {% endfor %}
         </div>
@@ -80,10 +123,13 @@
         {% if tasks %}
         <ul class="list-group list-group-flush">
           {% for task in tasks %}
-          <li class="list-group-item px-0 d-flex align-items-center">
+          <li class="list-group-item px-0 d-flex align-items-center position-relative">
+            <form method="POST" action="{{ url_for('hide_email_route', email_id=task.email_id) }}" class="position-absolute top-0 end-0" style="z-index: 10;">
+              <button type="submit" class="btn btn-sm btn-link text-muted p-1" style="line-height: 1;" title="Hide">×</button>
+            </form>
             <input class="form-check-input me-2" type="checkbox" disabled {% if task.status == 'completed' %}checked{% endif %} />
-            <div>
-              <p class="mb-0 fw-semibold">{{ task.description or task.subject }}</p>
+            <div class="flex-grow-1 pe-4">
+              <p class="mb-0 fw-semibold">{{ ((task.description or task.subject or 'Untitled task') | unescape)[:80] }}{% if (task.description or task.subject) and (task.description or task.subject)|length > 80 %}...{% endif %}</p>
               <small class="text-muted">Due {{ task.due_date or 'TBD' }}</small>
             </div>
           </li>
@@ -105,9 +151,12 @@
         {% if junk_emails %}
         <ul class="list-group list-group-flush">
           {% for email in junk_emails %}
-          <li class="list-group-item px-0">
-            <p class="fw-semibold mb-0">{{ email.subject or 'No subject' }}</p>
-            <small class="text-muted">{{ email.sender or 'Unknown sender' }}</small>
+          <li class="list-group-item px-0 position-relative">
+            <form method="POST" action="{{ url_for('hide_email_route', email_id=email.id) }}" class="position-absolute top-0 end-0" style="z-index: 10;">
+              <button type="submit" class="btn btn-sm btn-link text-muted p-1" style="line-height: 1;" title="Hide">×</button>
+            </form>
+            <p class="fw-semibold mb-0 pe-4">{{ ((email.subject or 'No subject') | unescape)[:60] }}{% if email.subject and email.subject|length > 60 %}...{% endif %}</p>
+            <small class="text-muted">{{ (email.sender or 'Unknown sender')[:40] }}{% if email.sender and email.sender|length > 40 %}...{% endif %}</small>
             {% if email.unsubscribe_url %}
             <div class="mt-2">
               <a class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener" href="{{ email.unsubscribe_url }}">Unsubscribe</a>

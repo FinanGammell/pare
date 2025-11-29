@@ -25,11 +25,18 @@
           {% for task in tasks %}
           <tr>
             <td><input class="form-check-input" type="checkbox" disabled {% if task.status == 'completed' %}checked{% endif %} /></td>
-            <td class="fw-semibold">{{ task.description or task.subject or 'Untitled task' }}</td>
+            <td class="fw-semibold">
+              <div class="d-flex align-items-center justify-content-between">
+                <span>{{ ((task.description or task.subject or 'Untitled task') | unescape)[:80] }}{% if (task.description or task.subject) and (task.description or task.subject)|length > 80 %}...{% endif %}</span>
+                <form method="POST" action="{{ url_for('hide_email_route', email_id=task.email_id) }}" class="d-inline ms-2">
+                  <button type="submit" class="btn btn-sm btn-link text-muted p-0" style="line-height: 1; font-size: 1.2rem;" title="Hide">×</button>
+                </form>
+              </div>
+            </td>
             <td>{{ task.due_date or 'TBD' }}</td>
             <td><span class="badge text-bg-{{ 'success' if task.status == 'completed' else 'warning' }}">{{ task.status|capitalize }}</span></td>
             <td>
-              <a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/{{ task.gmail_message_id }}">Open</a>
+              <a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="{{ url_for('open_email', gmail_message_id=task.gmail_message_id) }}">Open</a>
             </td>
           </tr>
           {% endfor %}

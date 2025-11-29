@@ -11,21 +11,24 @@
 <div class="row g-4">
   {% for meeting in meetings %}
   <div class="col-md-6 col-lg-4">
-    <div class="card shadow-sm border-0 h-100">
+    <div class="card shadow-sm border-0 h-100 position-relative">
+      <form method="POST" action="{{ url_for('hide_email_route', email_id=meeting.email_id) }}" class="position-absolute top-0 end-0 m-2" style="z-index: 10;">
+        <button type="submit" class="btn btn-sm btn-link text-muted p-1" style="line-height: 1; font-size: 1.5rem;" title="Hide">×</button>
+      </form>
       <div class="card-body d-flex flex-column">
-        <h2 class="h5">{{ meeting.title or meeting.subject or 'Untitled Meeting' }}</h2>
-        <p class="text-muted small mb-2">From {{ meeting.sender or 'Unknown sender' }}</p>
+        <h2 class="h5 pe-4">{{ ((meeting.title or meeting.subject or 'Untitled Meeting') | unescape)[:50] }}{% if (meeting.title or meeting.subject) and (meeting.title or meeting.subject)|length > 50 %}...{% endif %}</h2>
+        <p class="text-muted small mb-2">From {{ ((meeting.sender or 'Unknown sender') | unescape)[:40] }}{% if meeting.sender and meeting.sender|length > 40 %}...{% endif %}</p>
         <p class="mb-1"><strong>When:</strong> {{ meeting.start_time or meeting.email_date or 'TBD' }}</p>
         {% if meeting.end_time %}
         <p class="mb-1"><strong>Ends:</strong> {{ meeting.end_time }}</p>
         {% endif %}
-        <p class="mb-1"><strong>Location:</strong> {{ meeting.location or 'Not provided' }}</p>
+        <p class="mb-1"><strong>Location:</strong> {{ ((meeting.location or 'Not provided') | unescape)[:30] }}{% if meeting.location and meeting.location|length > 30 %}...{% endif %}</p>
         {% set attendees = meeting.attendees_json.get('attendees', []) if meeting.attendees_json else [] %}
         {% if attendees %}
-        <p class="mb-1"><strong>Attendees:</strong> {{ attendees | join(', ') }}</p>
+        <p class="mb-1"><strong>Attendees:</strong> {{ attendees[:5] | join(', ') }}{% if attendees|length > 5 %}... ({{ attendees|length - 5 }} more){% endif %}</p>
         {% endif %}
         <div class="mt-auto pt-3">
-          <a class="btn btn-outline-primary w-100" target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/{{ meeting.gmail_message_id }}">Open email</a>
+          <a class="btn btn-outline-primary w-100" target="_blank" rel="noopener" href="{{ url_for('open_email', gmail_message_id=meeting.gmail_message_id) }}">Open email</a>
         </div>
       </div>
     </div>

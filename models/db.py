@@ -5,7 +5,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from flask import g
 
@@ -44,6 +44,7 @@ DDL_STATEMENTS = [
         body TEXT,
         snippet TEXT,
         raw_json TEXT,
+        hidden INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         UNIQUE (user_id, gmail_message_id),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -63,7 +64,7 @@ DDL_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS meetings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email_id INTEGER NOT NULL,
+        email_id INTEGER NOT NULL UNIQUE,
         title TEXT,
         start_time TEXT,
         end_time TEXT,
@@ -77,7 +78,7 @@ DDL_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email_id INTEGER NOT NULL,
+        email_id INTEGER NOT NULL UNIQUE,
         description TEXT,
         due_date TEXT,
         status TEXT DEFAULT 'pending',
@@ -89,7 +90,7 @@ DDL_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS unsubscribe_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email_id INTEGER NOT NULL,
+        email_id INTEGER NOT NULL UNIQUE,
         unsubscribe_url TEXT,
         status TEXT DEFAULT 'unknown',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -99,13 +100,33 @@ DDL_STATEMENTS = [
 ]
 
 
+def _create_connection() -> sqlite3.Connection:
+    """Create a new SQLite connection with proper settings for concurrency."""
+    # Add timeout for concurrent access (5 seconds)
+    # Enable WAL mode for better concurrency
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    # Enable WAL mode for better concurrency (allows multiple readers and one writer)
+    try:
+        conn.execute("PRAGMA journal_mode = WAL;")
+    except sqlite3.OperationalError:
+        # WAL mode might not be available in some SQLite versions, continue without it
+        pass
+    return conn
+
+
 def get_connection() -> sqlite3.Connection:
     """Return a cached SQLite connection stored on the Flask `g` object."""
-    conn = getattr(g, _CONNECTION_KEY, None)
+    try:
+        conn = getattr(g, _CONNECTION_KEY, None)
+    except RuntimeError:
+        # No Flask application context (e.g., in background thread)
+        # Create a new connection for this operation
+        return _create_connection()
+    
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
+        conn = _create_connection()
         setattr(g, _CONNECTION_KEY, conn)
     return conn
 
@@ -120,15 +141,142 @@ def close_connection(_: Optional[BaseException] = None) -> None:
 
 
 @contextmanager
-def cursor() -> Iterable[sqlite3.Cursor]:
-    """Context manager yielding a SQLite cursor with automatic commit."""
+def cursor() -> Iterator[sqlite3.Cursor]:
+    """Context manager yielding a SQLite cursor with automatic commit and retry logic."""
+    max_retries = 3
+    retry_count = 0
+    conn = None
+    cur = None
+    
+    while retry_count < max_retries:
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            try:
+                yield cur
+                conn.commit()
+                break  # Success, exit retry loop
+            except sqlite3.OperationalError as e:
+                if cur:
+                    cur.close()
+                if "database is locked" in str(e).lower() and retry_count < max_retries - 1:
+                    retry_count += 1
+                    import time
+                    time.sleep(0.1 * retry_count)  # Exponential backoff
+                    continue
+                else:
+                    raise
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e).lower() and retry_count < max_retries - 1:
+                retry_count += 1
+                import time
+                time.sleep(0.1 * retry_count)  # Exponential backoff
+                continue
+            else:
+                raise
+        finally:
+            if cur and retry_count >= max_retries - 1:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+
+
+def remove_duplicates() -> None:
+    """Remove duplicate entries from emails, meetings, tasks, and unsubscribe_entries tables."""
     conn = get_connection()
-    cur = conn.cursor()
-    try:
-        yield cur
-        conn.commit()
-    finally:
-        cur.close()
+    
+    # Remove duplicate emails, keeping the most recent one (by created_at or id)
+    # First, delete classifications, meetings, tasks, and unsubscribe entries for duplicate emails
+    conn.execute("""
+        DELETE FROM classifications
+        WHERE email_id IN (
+            SELECT id FROM emails
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM emails 
+                GROUP BY user_id, gmail_message_id
+            )
+        )
+    """)
+    
+    conn.execute("""
+        DELETE FROM meetings
+        WHERE email_id IN (
+            SELECT id FROM emails
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM emails 
+                GROUP BY user_id, gmail_message_id
+            )
+        )
+    """)
+    
+    conn.execute("""
+        DELETE FROM tasks
+        WHERE email_id IN (
+            SELECT id FROM emails
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM emails 
+                GROUP BY user_id, gmail_message_id
+            )
+        )
+    """)
+    
+    conn.execute("""
+        DELETE FROM unsubscribe_entries
+        WHERE email_id IN (
+            SELECT id FROM emails
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM emails 
+                GROUP BY user_id, gmail_message_id
+            )
+        )
+    """)
+    
+    # Now remove duplicate emails themselves, keeping the most recent one
+    conn.execute("""
+        DELETE FROM emails
+        WHERE id NOT IN (
+            SELECT MIN(id) 
+            FROM emails 
+            GROUP BY user_id, gmail_message_id
+        )
+    """)
+    
+    # Remove duplicate meetings, keeping the most recent one
+    conn.execute("""
+        DELETE FROM meetings
+        WHERE id NOT IN (
+            SELECT MIN(id) 
+            FROM meetings 
+            GROUP BY email_id
+        )
+    """)
+    
+    # Remove duplicate tasks, keeping the most recent one
+    conn.execute("""
+        DELETE FROM tasks
+        WHERE id NOT IN (
+            SELECT MIN(id) 
+            FROM tasks 
+            GROUP BY email_id
+        )
+    """)
+    
+    # Remove duplicate unsubscribe entries, keeping the most recent one
+    conn.execute("""
+        DELETE FROM unsubscribe_entries
+        WHERE id NOT IN (
+            SELECT MIN(id) 
+            FROM unsubscribe_entries 
+            GROUP BY email_id
+        )
+    """)
+    
+    conn.commit()
 
 
 def create_tables() -> None:
@@ -136,6 +284,61 @@ def create_tables() -> None:
     conn = get_connection()
     for statement in DDL_STATEMENTS:
         conn.execute(statement)
+    conn.commit()
+    
+    # Add hidden column to emails table if it doesn't exist (migration)
+    try:
+        conn.execute("ALTER TABLE emails ADD COLUMN hidden INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists or table doesn't exist yet
+        pass
+    
+    # Remove any existing duplicates before adding constraints
+    try:
+        remove_duplicates()
+    except sqlite3.OperationalError:
+        # Tables might not exist yet
+        pass
+    
+    # Add UNIQUE constraints to existing tables if they don't exist
+    try:
+        # Ensure unique constraint on emails (user_id, gmail_message_id)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_user_gmail_id ON emails(user_id, gmail_message_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_email_id ON meetings(email_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_email_id ON tasks(email_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_unsubscribe_email_id ON unsubscribe_entries(email_id)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Constraints might already exist or table might not exist yet
+        pass
+
+
+def clear_all_data() -> None:
+    """Clear all data from all tables. Use with caution!"""
+    conn = get_connection()
+    # Delete in order to respect foreign key constraints
+    conn.execute("DELETE FROM unsubscribe_entries")
+    conn.execute("DELETE FROM tasks")
+    conn.execute("DELETE FROM meetings")
+    conn.execute("DELETE FROM classifications")
+    conn.execute("DELETE FROM emails")
+    conn.execute("DELETE FROM credentials")
+    conn.execute("DELETE FROM users")
+    conn.commit()
+
+
+def clear_user_data(user_id: int) -> None:
+    """Clear all data for a specific user. Use with caution!"""
+    conn = get_connection()
+    # Delete in order to respect foreign key constraints
+    conn.execute("DELETE FROM unsubscribe_entries WHERE email_id IN (SELECT id FROM emails WHERE user_id = ?)", (user_id,))
+    conn.execute("DELETE FROM tasks WHERE email_id IN (SELECT id FROM emails WHERE user_id = ?)", (user_id,))
+    conn.execute("DELETE FROM meetings WHERE email_id IN (SELECT id FROM emails WHERE user_id = ?)", (user_id,))
+    conn.execute("DELETE FROM classifications WHERE email_id IN (SELECT id FROM emails WHERE user_id = ?)", (user_id,))
+    conn.execute("DELETE FROM emails WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM credentials WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
 
 
@@ -242,15 +445,16 @@ def create_email(
         cur.execute(
             """
             INSERT INTO emails (
-                user_id, gmail_message_id, sender, subject, date, body, snippet, raw_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                user_id, gmail_message_id, sender, subject, date, body, snippet, raw_json, hidden, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(user_id, gmail_message_id) DO UPDATE SET
                 sender=excluded.sender,
                 subject=excluded.subject,
                 date=excluded.date,
                 body=excluded.body,
                 snippet=excluded.snippet,
-                raw_json=excluded.raw_json
+                raw_json=excluded.raw_json,
+                hidden=emails.hidden
             """,
             (
                 user_id,
@@ -279,6 +483,19 @@ def get_email_by_message_id(user_id: int, gmail_message_id: str) -> Optional[Dic
     return dict(row) if row else None
 
 
+def get_all_gmail_message_ids(user_id: int) -> List[str]:
+    """Get all gmail_message_ids for a user. Used for proactive duplicate prevention."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT gmail_message_id FROM emails
+        WHERE user_id = ? AND gmail_message_id IS NOT NULL
+        """,
+        (user_id,),
+    ).fetchall()
+    return [row["gmail_message_id"] for row in rows if row["gmail_message_id"]]
+
+
 def get_email_by_id(email_id: int) -> Optional[Dict[str, Any]]:
     conn = get_connection()
     row = conn.execute(
@@ -288,6 +505,46 @@ def get_email_by_id(email_id: int) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def get_most_recent_email_date(user_id: int) -> Optional[str]:
+    """Get the date of the most recently synced email for a user."""
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT date FROM emails
+        WHERE user_id = ?
+        ORDER BY date DESC NULLS LAST, created_at DESC
+        LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+    return row["date"] if row and row["date"] else None
+
+
+def get_sync_stats(user_id: int) -> Dict[str, Any]:
+    """Get sync statistics: total emails, processed count, unprocessed count."""
+    conn = get_connection()
+    total = conn.execute(
+        "SELECT COUNT(*) AS count FROM emails WHERE user_id = ? AND (hidden IS NULL OR hidden = 0)",
+        (user_id,),
+    ).fetchone()["count"]
+    
+    processed = conn.execute(
+        """
+        SELECT COUNT(DISTINCT classifications.email_id) AS count
+        FROM classifications
+        JOIN emails ON emails.id = classifications.email_id
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
+        """,
+        (user_id,),
+    ).fetchone()["count"]
+    
+    return {
+        "total_emails": total,
+        "processed_emails": processed,
+        "unprocessed_emails": total - processed,
+    }
+
+
 def fetch_unclassified_emails(user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
     conn = get_connection()
     rows = conn.execute(
@@ -295,6 +552,7 @@ def fetch_unclassified_emails(user_id: int, limit: int = 50) -> List[Dict[str, A
         SELECT *
         FROM emails
         WHERE user_id = ?
+          AND (hidden IS NULL OR hidden = 0)
           AND NOT EXISTS (
             SELECT 1 FROM classifications WHERE classifications.email_id = emails.id
           )
@@ -304,6 +562,16 @@ def fetch_unclassified_emails(user_id: int, limit: int = 50) -> List[Dict[str, A
         (user_id, limit),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def hide_email(user_id: int, email_id: int) -> None:
+    """Mark an email as hidden so it doesn't appear in lists."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE emails SET hidden = 1 WHERE id = ? AND user_id = ?",
+        (email_id, user_id),
+    )
+    conn.commit()
 
 
 def create_classification(
@@ -344,7 +612,7 @@ def fetch_emails_with_categories(user_id: int) -> List[Dict[str, Any]]:
         SELECT emails.id, emails.subject, emails.snippet, emails.date, classifications.category
         FROM emails
         JOIN classifications ON classifications.email_id = emails.id
-        WHERE emails.user_id = ?
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
         ORDER BY emails.date DESC NULLS LAST, emails.created_at DESC
         """,
         (user_id,),
@@ -355,10 +623,12 @@ def fetch_emails_with_categories(user_id: int) -> List[Dict[str, Any]]:
 def fetch_meetings(user_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     conn = get_connection()
     query = """
-        SELECT meetings.*, emails.subject, emails.sender, emails.gmail_message_id, emails.date AS email_date
+        SELECT DISTINCT meetings.id, meetings.email_id, meetings.title, meetings.start_time, 
+               meetings.end_time, meetings.location, meetings.attendees_json, meetings.confidence,
+               emails.subject, emails.sender, emails.gmail_message_id, emails.date AS email_date
         FROM meetings
         JOIN emails ON emails.id = meetings.email_id
-        WHERE emails.user_id = ?
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
         ORDER BY COALESCE(meetings.start_time, emails.date) ASC
     """
     params: List[Any] = [user_id]
@@ -384,10 +654,11 @@ def fetch_meetings(user_id: int, limit: Optional[int] = None) -> List[Dict[str, 
 def fetch_tasks(user_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     conn = get_connection()
     query = """
-        SELECT tasks.*, emails.subject, emails.sender, emails.gmail_message_id
+        SELECT DISTINCT tasks.id, tasks.email_id, tasks.description, tasks.due_date, 
+               tasks.status, tasks.confidence, emails.subject, emails.sender, emails.gmail_message_id
         FROM tasks
         JOIN emails ON emails.id = tasks.email_id
-        WHERE emails.user_id = ?
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
         ORDER BY COALESCE(tasks.due_date, emails.date) ASC
     """
     params: List[Any] = [user_id]
@@ -401,8 +672,10 @@ def fetch_tasks(user_id: int, limit: Optional[int] = None) -> List[Dict[str, Any
 def fetch_junk_emails(user_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     conn = get_connection()
     query = """
-        SELECT
-            emails.*,
+        SELECT DISTINCT
+            emails.id, emails.user_id, emails.gmail_message_id, emails.sender, 
+            emails.subject, emails.date, emails.body, emails.snippet, emails.raw_json,
+            emails.created_at,
             classifications.category,
             unsubscribe_entries.unsubscribe_url
         FROM emails
@@ -410,6 +683,7 @@ def fetch_junk_emails(user_id: int, limit: Optional[int] = None) -> List[Dict[st
         LEFT JOIN unsubscribe_entries ON unsubscribe_entries.email_id = emails.id
         WHERE emails.user_id = ?
           AND classifications.category IN ('junk', 'newsletter')
+          AND (emails.hidden IS NULL OR emails.hidden = 0)
         ORDER BY emails.date DESC NULLS LAST, emails.created_at DESC
     """
     params: List[Any] = [user_id]
@@ -423,7 +697,7 @@ def fetch_junk_emails(user_id: int, limit: Optional[int] = None) -> List[Dict[st
 def fetch_analytics(user_id: int) -> Dict[str, Any]:
     conn = get_connection()
     total_emails = conn.execute(
-        "SELECT COUNT(*) AS count FROM emails WHERE user_id = ?",
+        "SELECT COUNT(*) AS count FROM emails WHERE user_id = ? AND (hidden IS NULL OR hidden = 0)",
         (user_id,),
     ).fetchone()["count"]
     processed_emails = conn.execute(
@@ -431,7 +705,7 @@ def fetch_analytics(user_id: int) -> Dict[str, Any]:
         SELECT COUNT(DISTINCT classifications.email_id) AS count
         FROM classifications
         JOIN emails ON emails.id = classifications.email_id
-        WHERE emails.user_id = ?
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
         """,
         (user_id,),
     ).fetchone()["count"]
@@ -440,7 +714,7 @@ def fetch_analytics(user_id: int) -> Dict[str, Any]:
         SELECT classifications.category, COUNT(*) AS count
         FROM classifications
         JOIN emails ON emails.id = classifications.email_id
-        WHERE emails.user_id = ?
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
         GROUP BY classifications.category
         """,
         (user_id,),
@@ -451,7 +725,7 @@ def fetch_analytics(user_id: int) -> Dict[str, Any]:
         SELECT COUNT(*) AS count
         FROM meetings
         JOIN emails ON emails.id = meetings.email_id
-        WHERE emails.user_id = ?
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
         """,
         (user_id,),
     ).fetchone()["count"]
@@ -460,7 +734,7 @@ def fetch_analytics(user_id: int) -> Dict[str, Any]:
         SELECT COUNT(*) AS count
         FROM tasks
         JOIN emails ON emails.id = tasks.email_id
-        WHERE emails.user_id = ?
+        WHERE emails.user_id = ? AND (emails.hidden IS NULL OR emails.hidden = 0)
         """,
         (user_id,),
     ).fetchone()["count"]
@@ -492,23 +766,55 @@ def create_meeting(
     attendees_json: Optional[Dict[str, Any]],
     confidence: float,
 ) -> Dict[str, Any]:
+    """Create or update a meeting for an email. Only one meeting per email."""
     with cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO meetings (
-                email_id, title, start_time, end_time, location, attendees_json, confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                email_id,
-                title,
-                start_time,
-                end_time,
-                location,
-                json.dumps(attendees_json or {}),
-                confidence,
-            ),
-        )
+        # Check if meeting already exists
+        existing = cur.execute(
+            "SELECT id FROM meetings WHERE email_id = ?",
+            (email_id,),
+        ).fetchone()
+        
+        if existing:
+            # Update existing meeting
+            cur.execute(
+                """
+                UPDATE meetings SET
+                    title = ?,
+                    start_time = ?,
+                    end_time = ?,
+                    location = ?,
+                    attendees_json = ?,
+                    confidence = ?
+                WHERE email_id = ?
+                """,
+                (
+                    title,
+                    start_time,
+                    end_time,
+                    location,
+                    json.dumps(attendees_json or {}),
+                    confidence,
+                    email_id,
+                ),
+            )
+        else:
+            # Insert new meeting
+            cur.execute(
+                """
+                INSERT INTO meetings (
+                    email_id, title, start_time, end_time, location, attendees_json, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    email_id,
+                    title,
+                    start_time,
+                    end_time,
+                    location,
+                    json.dumps(attendees_json or {}),
+                    confidence,
+                ),
+            )
     return get_meeting_for_email(email_id)  # type: ignore[return-value]
 
 
@@ -528,20 +834,46 @@ def create_task(
     status: str,
     confidence: float,
 ) -> Dict[str, Any]:
+    """Create or update a task for an email. Only one task per email."""
     with cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO tasks (email_id, description, due_date, status, confidence)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                email_id,
-                description,
-                due_date,
-                status,
-                confidence,
-            ),
-        )
+        # Check if task already exists
+        existing = cur.execute(
+            "SELECT id FROM tasks WHERE email_id = ?",
+            (email_id,),
+        ).fetchone()
+        
+        if existing:
+            # Update existing task (preserve status - don't overwrite user changes)
+            cur.execute(
+                """
+                UPDATE tasks SET
+                    description = ?,
+                    due_date = ?,
+                    confidence = ?
+                WHERE email_id = ? AND status = 'pending'
+                """,
+                (
+                    description,
+                    due_date,
+                    confidence,
+                    email_id,
+                ),
+            )
+        else:
+            # Insert new task
+            cur.execute(
+                """
+                INSERT INTO tasks (email_id, description, due_date, status, confidence)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    email_id,
+                    description,
+                    due_date,
+                    status,
+                    confidence,
+                ),
+            )
     return get_task_for_email(email_id)  # type: ignore[return-value]
 
 
@@ -559,18 +891,42 @@ def create_unsubscribe_entry(
     unsubscribe_url: Optional[str],
     status: str,
 ) -> Dict[str, Any]:
+    """Create or update an unsubscribe entry for an email. Only one entry per email."""
     with cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO unsubscribe_entries (email_id, unsubscribe_url, status)
-            VALUES (?, ?, ?)
-            """,
-            (
-                email_id,
-                unsubscribe_url,
-                status,
-            ),
-        )
+        # Check if unsubscribe entry already exists
+        existing = cur.execute(
+            "SELECT id FROM unsubscribe_entries WHERE email_id = ?",
+            (email_id,),
+        ).fetchone()
+        
+        if existing:
+            # Update existing entry
+            cur.execute(
+                """
+                UPDATE unsubscribe_entries SET
+                    unsubscribe_url = ?,
+                    status = ?
+                WHERE email_id = ?
+                """,
+                (
+                    unsubscribe_url,
+                    status,
+                    email_id,
+                ),
+            )
+        else:
+            # Insert new entry
+            cur.execute(
+                """
+                INSERT INTO unsubscribe_entries (email_id, unsubscribe_url, status)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    email_id,
+                    unsubscribe_url,
+                    status,
+                ),
+            )
     return get_unsubscribe_for_email(email_id)  # type: ignore[return-value]
 
 

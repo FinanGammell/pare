@@ -11,14 +11,17 @@
 <div class="row g-4">
   {% for email in junk_emails %}
   <div class="col-md-6">
-    <div class="card shadow-sm border-0 h-100">
+    <div class="card shadow-sm border-0 h-100 position-relative">
+      <form method="POST" action="{{ url_for('hide_email_route', email_id=email.id) }}" class="position-absolute top-0 end-0 m-2" style="z-index: 10;">
+        <button type="submit" class="btn btn-sm btn-link text-muted p-1" style="line-height: 1; font-size: 1.5rem;" title="Hide">×</button>
+      </form>
       <div class="card-body d-flex flex-column">
-        <h2 class="h5">{{ email.subject or 'No subject' }}</h2>
-        <p class="text-muted small mb-2">{{ email.sender or 'Unknown sender' }}</p>
-        {% set preview = email.snippet or (email.body[:160] if email.body else '') %}
-        <p class="flex-grow-1">{{ preview }}</p>
+        <h2 class="h5 pe-4">{{ ((email.subject or 'No subject') | unescape)[:60] }}{% if email.subject and email.subject|length > 60 %}...{% endif %}</h2>
+        <p class="text-muted small mb-2">{{ ((email.sender or 'Unknown sender') | unescape)[:40] }}{% if email.sender and email.sender|length > 40 %}...{% endif %}</p>
+        {% set preview = (email.snippet or (email.body[:120] if email.body else '')) | unescape %}
+        <p class="flex-grow-1 text-muted small">{{ preview[:120] }}{% if preview|length > 120 %}...{% endif %}</p>
         <div class="d-flex gap-2 pt-2">
-          <a class="btn btn-outline-secondary" target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/{{ email.gmail_message_id }}">Open email</a>
+          <a class="btn btn-outline-secondary" target="_blank" rel="noopener" href="{{ url_for('open_email', gmail_message_id=email.gmail_message_id) }}">Open email</a>
           {% if email.unsubscribe_url %}
           <a class="btn btn-danger" target="_blank" rel="noopener" href="{{ email.unsubscribe_url }}">Unsubscribe</a>
           {% endif %}

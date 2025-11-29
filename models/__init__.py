@@ -36,6 +36,10 @@ get_credentials_for_user = db.get_credentials_for_user
 create_email = db.create_email
 create_classification = db.create_classification
 get_email_by_id = db.get_email_by_id
+get_email_by_message_id = db.get_email_by_message_id
+get_all_gmail_message_ids = db.get_all_gmail_message_ids
+get_most_recent_email_date = db.get_most_recent_email_date
+get_sync_stats = db.get_sync_stats
 fetch_unclassified_emails = db.fetch_unclassified_emails
 fetch_meetings = db.fetch_meetings
 fetch_tasks = db.fetch_tasks
@@ -44,6 +48,10 @@ fetch_analytics = db.fetch_analytics
 create_meeting = db.create_meeting
 create_task = db.create_task
 create_unsubscribe_entry = db.create_unsubscribe_entry
+get_unsubscribe_for_email = db.get_unsubscribe_for_email
+hide_email = db.hide_email
+clear_user_data = db.clear_user_data
+remove_duplicates = db.remove_duplicates
 
 
 def fetch_category_summary(user_id: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -54,16 +62,17 @@ def fetch_category_summary(user_id: int) -> Dict[str, List[Dict[str, Any]]]:
     }
     for row in rows:
         bucket = row.get("category")
-        if bucket not in summary:
+        if bucket and bucket not in summary:
             summary[bucket] = []
-        summary[bucket].append(
-            {
-                "id": row.get("id"),
-                "subject": row.get("subject"),
-                "snippet": row.get("snippet"),
-                "date": row.get("date"),
-            }
-        )
+        if bucket:
+            summary[bucket].append(
+                {
+                    "id": row.get("id"),
+                    "subject": row.get("subject"),
+                    "snippet": row.get("snippet"),
+                    "date": row.get("date"),
+                }
+            )
     return summary
 
 
@@ -80,6 +89,10 @@ __all__ = [
     "create_email",
     "create_classification",
     "get_email_by_id",
+    "get_email_by_message_id",
+    "get_all_gmail_message_ids",
+    "get_most_recent_email_date",
+    "get_sync_stats",
     "fetch_unclassified_emails",
     "fetch_meetings",
     "fetch_tasks",
@@ -88,5 +101,9 @@ __all__ = [
     "create_meeting",
     "create_task",
     "create_unsubscribe_entry",
+    "get_unsubscribe_for_email",
+    "hide_email",
     "fetch_category_summary",
+    "clear_user_data",
+    "remove_duplicates",
 ]

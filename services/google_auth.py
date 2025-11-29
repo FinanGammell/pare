@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import Dict, Tuple
 
-from flask import current_app, url_for
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
+logger = logging.getLogger(__name__)
+
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
-GOOGLE_AUTH_PROVIDER_CERT_URL = "https://www.googleapis.com/oauth2/v1/certs"
 
 
 class GoogleAuthService:
@@ -20,46 +22,66 @@ class GoogleAuthService:
         self.config = config
 
     def _get_redirect_uri(self) -> str:
-        """Get OAuth redirect URI, using url_for if available, otherwise from config."""
-        try:
-            # Try to use url_for for dynamic redirect URI (works in Flask app context)
-            with current_app.app_context():
-                redirect_uri = url_for("oauth2callback", _external=True)
-                return redirect_uri
-        except (RuntimeError, AttributeError):
-            # Fallback to config if not in app context or url_for fails
-            if self.config.GOOGLE_REDIRECT_URI:
-                return self.config.GOOGLE_REDIRECT_URI
-            # Last resort: construct from Railway domain or localhost
-            railway_domain = self.config.RAILWAY_PUBLIC_DOMAIN
-            if railway_domain:
-                return f"https://{railway_domain}/oauth2callback"
-            return "http://localhost:5000/oauth2callback"
+        """Return the OAuth redirect URI from environment only.
+
+        The value **must** be provided via GOOGLE_REDIRECT_URI.
+        """
+        redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
+        if not redirect_uri:
+            # This should already be validated at startup, but we keep a guard here.
+            raise RuntimeError(
+                "GOOGLE_REDIRECT_URI is not set. OAuth cannot start. "
+                "Set GOOGLE_REDIRECT_URI to either "
+                "http://localhost:5001/oauth2callback (local) or "
+                "https://pare.up.railway.app/oauth2callback (production)."
+            )
+        return redirect_uri
 
     def _flow(self, state: str | None = None) -> Flow:
+        """Create a unified OAuth Flow configuration using env vars only.
+        
+        Google Identity Platform automatically adds 'openid', so we must
+        explicitly include it in our requested scopes to avoid scope mismatch errors.
+        """
         redirect_uri = self._get_redirect_uri()
+
+        # Unified OAuth Flow configuration - must match exactly across all Flow instances
         client_config = {
             "web": {
-                "client_id": self.config.GOOGLE_CLIENT_ID,
-                "project_id": "pare-email-suite",
+                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                "redirect_uris": [os.getenv("GOOGLE_REDIRECT_URI")],
                 "auth_uri": GOOGLE_AUTH_URI,
                 "token_uri": GOOGLE_TOKEN_URI,
-                "auth_provider_x509_cert_url": GOOGLE_AUTH_PROVIDER_CERT_URL,
-                "client_secret": self.config.GOOGLE_CLIENT_SECRET,
-                "redirect_uris": [redirect_uri],
             }
         }
+
+        # CRITICAL: Must include "openid" first, as Google Identity Platform adds it automatically
+        scopes = [
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/gmail.readonly",
+        ]
+
         flow = Flow.from_client_config(
             client_config,
-            scopes=self.config.GOOGLE_SCOPES,
+            scopes=scopes,
             state=state,
         )
-        flow.redirect_uri = redirect_uri
+        flow.redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
         return flow
 
     def authorization_url(self) -> Tuple[str, str]:
         """Return a Google OAuth authorization URL + state."""
         flow = self._flow()
+        # Debug logs to verify OAuth configuration
+        # Get scopes from the Flow's internal oauth2session
+        scopes_list = getattr(flow.oauth2session, 'scope', [])
+        if isinstance(scopes_list, str):
+            scopes_list = scopes_list.split()
+        print("DEBUG: OAuth scopes being requested:", scopes_list)
+        print("DEBUG: redirect_uri being used:", flow.redirect_uri)
         authorization_url, state = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
@@ -68,7 +90,11 @@ class GoogleAuthService:
         return authorization_url, state
 
     def fetch_credentials(self, authorization_response: str, state: str | None):
-        """Exchange the auth code for credentials using the provided state."""
+        """Exchange the auth code for credentials using the provided state.
+        
+        Since we now explicitly include 'openid' in our requested scopes,
+        Google's response will match and no scope mismatch error will occur.
+        """
         flow = self._flow(state)
         flow.fetch_token(authorization_response=authorization_response)
         return flow.credentials

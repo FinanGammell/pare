@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -16,6 +17,7 @@ from models import (
     create_task,
     create_unsubscribe_entry,
     fetch_unclassified_emails,
+    get_unsubscribe_for_email,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,12 +37,14 @@ class EmailClassifier:
     def __init__(
         self,
         model: str = "gpt-4o-mini",
-        rate_delay: float = 0.5,
+        rate_delay: float = 0.1,  # Reduced from 0.5s - OpenAI handles rate limiting
         batch_size: int = 25,
+        max_workers: int = 5,  # Parallel processing workers
     ) -> None:
         self.model = model
         self.rate_delay = rate_delay
         self.batch_size = batch_size
+        self.max_workers = max_workers
         api_key = os.getenv("OPENAI_API_KEY")
         self.client: Optional[OpenAI] = OpenAI(api_key=api_key) if api_key else None
         if not api_key:
@@ -58,20 +62,19 @@ class EmailClassifier:
                 "notes": "OPENAI_API_KEY missing; default classification applied.",
             }
 
-        body = (email_row.get("body") or email_row.get("snippet") or "")[:6000]
+        # Optimized: Reduce body size for faster processing (most important info is usually at start)
+        body = (email_row.get("body") or email_row.get("snippet") or "")[:4000]
+        
+        # More concise prompt for faster processing
         prompt = (
-            "You are Pare, an email productivity assistant. "
-            "Classify the email into exactly one of: meeting, task, junk, newsletter, other. "
-            "Return JSON with fields: category, confidence (0-1 float), "
-            "meeting (object with title, start_time ISO8601, end_time, location, attendees list) "
-            "when category is meeting; task (object with description and optional due_date ISO8601) "
-            "when category is task; unsubscribe_url when the email is junk or newsletter; "
-            "and notes for any extra context. "
-            "If information is missing, set the field to null. "
-            "Here is the email:\n\n"
-            f"Sender: {email_row.get('sender') or 'Unknown'}\n"
+            "Classify this email into exactly one: meeting, task, junk, newsletter, or other.\n"
+            "Return JSON: {category, confidence (0-1), "
+            "meeting{title,start_time ISO8601,end_time,location,attendees[]}, "
+            "task{description,due_date ISO8601}, unsubscribe_url, notes}\n"
+            "Set missing fields to null.\n\n"
+            f"From: {email_row.get('sender') or 'Unknown'}\n"
             f"Subject: {email_row.get('subject') or 'No subject'}\n"
-            f"Body:\n{body}"
+            f"Body: {body}"
         )
 
         try:
@@ -114,44 +117,98 @@ class EmailClassifier:
         )
 
         if category == EmailCategory.MEETING.value:
+            import html
             meeting = result.get("meeting") or {}
+            # Decode HTML entities in meeting data
+            title = meeting.get("title")
+            if title:
+                try:
+                    title = html.unescape(str(title))
+                except Exception:
+                    pass
+            location = meeting.get("location")
+            if location:
+                try:
+                    location = html.unescape(str(location))
+                except Exception:
+                    pass
             create_meeting(
                 email_id=email_row["id"],
-                title=meeting.get("title"),
+                title=title,
                 start_time=meeting.get("start_time") or meeting.get("start"),
                 end_time=meeting.get("end_time"),
-                location=meeting.get("location"),
+                location=location,
                 attendees_json={"attendees": meeting.get("attendees") or []},
                 confidence=confidence,
             )
 
         if category == EmailCategory.TASK.value:
+            import html
             task = result.get("task") or {}
+            # Decode HTML entities in task description
+            description = task.get("description") or email_row.get("subject")
+            if description:
+                try:
+                    description = html.unescape(str(description))
+                except Exception:
+                    pass
             create_task(
                 email_id=email_row["id"],
-                description=task.get("description") or email_row.get("subject"),
+                description=description,
                 due_date=task.get("due_date"),
                 status="pending",
                 confidence=confidence,
             )
 
+        # Extract unsubscribe URL - prefer OpenAI result, but also check email headers/body
         unsubscribe_url = (
             result.get("unsubscribe_url")
             or (result.get("unsubscribe") or {}).get("url")
         )
+        
+        # If OpenAI didn't find one, try extracting from email data
+        if not unsubscribe_url:
+            from services.gmail_sync import extract_unsubscribe_url
+            import json
+            
+            # Try to get headers and body from raw_json
+            raw_json_str = email_row.get("raw_json")
+            if raw_json_str:
+                try:
+                    if isinstance(raw_json_str, str):
+                        raw_json = json.loads(raw_json_str)
+                    else:
+                        raw_json = raw_json_str
+                    
+                    payload = raw_json.get("payload", {})
+                    headers = {}
+                    for header in payload.get("headers", []):
+                        name = header.get("name")
+                        if name:
+                            headers[name] = header.get("value", "")
+                    
+                    body = email_row.get("body") or ""
+                    unsubscribe_url = extract_unsubscribe_url(headers, body)
+                except (json.JSONDecodeError, KeyError, AttributeError):
+                    pass
+        
+        # Only create unsubscribe entry if we found a URL and email is junk/newsletter
+        # Also check if one already exists to avoid duplicates
         if unsubscribe_url and category in (
             EmailCategory.JUNK.value,
             EmailCategory.NEWSLETTER.value,
         ):
-            create_unsubscribe_entry(
-                email_id=email_row["id"],
-                unsubscribe_url=unsubscribe_url,
-                status="pending",
-            )
+            existing = get_unsubscribe_for_email(email_row["id"])
+            if not existing:
+                create_unsubscribe_entry(
+                    email_id=email_row["id"],
+                    unsubscribe_url=unsubscribe_url,
+                    status="pending",
+                )
         return result
 
     def process_all_unprocessed_emails(self, user_id: int, batch_size: Optional[int] = None) -> int:
-        """Process all emails without classifications for the given user."""
+        """Process all emails without classifications using parallel processing for speed."""
         size = batch_size or self.batch_size
         processed = 0
 
@@ -159,18 +216,32 @@ class EmailClassifier:
             emails = fetch_unclassified_emails(user_id, limit=size)
             if not emails:
                 break
-            for email in emails:
-                try:
-                    self.process_email(email)
-                    processed += 1
-                    time.sleep(self.rate_delay)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("Failed to process email %s: %s", email.get("id"), exc)
-                    create_classification(
-                        email_id=email["id"],
-                        category=EmailCategory.OTHER.value,
-                        confidence=0.0,
-                    )
+            
+            # Process emails in parallel for much faster processing
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Submit all emails for processing
+                future_to_email = {
+                    executor.submit(self.process_email, email): email
+                    for email in emails
+                }
+                
+                # Process results as they complete
+                for future in as_completed(future_to_email):
+                    email = future_to_email[future]
+                    try:
+                        future.result()  # Wait for completion and raise any exceptions
+                        processed += 1
+                        # Small delay to respect rate limits (reduced from per-email to per-batch)
+                        if self.rate_delay > 0:
+                            time.sleep(self.rate_delay / self.max_workers)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Failed to process email %s: %s", email.get("id"), exc)
+                        create_classification(
+                            email_id=email["id"],
+                            category=EmailCategory.OTHER.value,
+                            confidence=0.0,
+                        )
+            
             if len(emails) < size:
                 break
         return processed

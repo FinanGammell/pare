@@ -41,11 +41,11 @@ print(secrets.token_hex(32))
 2. Navigate to **APIs & Services** → **Credentials**
 3. Edit your OAuth 2.0 Client ID
 4. Add **Authorized redirect URIs**:
-   - Development: `http://localhost:5000/oauth2callback`
-   - Production: `https://your-domain.com/oauth2callback`
+   - Development: `http://localhost:5001/oauth2callback`
+   - Production: `https://pare.up.railway.app/oauth2callback`
 5. Verify **Authorized JavaScript origins**:
-   - Development: `http://localhost:5000`
-   - Production: `https://your-domain.com`
+   - Development: `http://localhost:5001`
+   - Production: `https://pare.up.railway.app`
 
 ### Verify OAuth Scopes
 

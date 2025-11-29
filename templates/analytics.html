@@ -72,7 +72,7 @@
         <h3 class="fs-6 text-uppercase text-muted">{{ category|title }}</h3>
         <ul class="list-unstyled small mb-0">
           {% for email in emails[:5] %}
-          <li class="mb-2">{{ email.subject or 'No subject' }}</li>
+          <li class="mb-2">{{ (email.subject or 'No subject') | unescape }}</li>
           {% else %}
           <li class="text-muted">No entries.</li>
           {% endfor %}

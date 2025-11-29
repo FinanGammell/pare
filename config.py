@@ -31,10 +31,10 @@ class Config:
         "",  # Empty default - will be set dynamically
     )
     GOOGLE_SCOPES = [
+        "openid",
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/gmail.readonly",
-        "openid",
     ]
 
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

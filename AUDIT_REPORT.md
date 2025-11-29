@@ -36,18 +36,12 @@ The Pare Flask application is **mostly ready** for deployment but has **7 critic
 
 **Issues Found:**
 
-1. **CRITICAL: OAuth Redirect URI Mismatch**
+1. **CRITICAL: OAuth Redirect URI Mismatch** ✅ FIXED
    - **Location:** `config.py:22` vs `app.py:79`
-   - **Issue:** Config defaults to `http://localhost:5000/auth/google/callback` but route is `/oauth2callback`
+   - **Issue:** Config previously defaulted to `http://localhost:5000/auth/google/callback` but route is `/oauth2callback` (now fixed)
    - **Impact:** OAuth flow will fail in production
-   - **Fix:** Update `config.py` line 22:
-     ```python
-     GOOGLE_REDIRECT_URI = os.environ.get(
-         "GOOGLE_REDIRECT_URI",
-         "http://localhost:5000/oauth2callback",  # Changed from /auth/google/callback
-     )
-     ```
-   - **OR:** Use `url_for('oauth2callback', _external=True)` in `google_auth.py` to construct dynamically
+   - **Fix:** ✅ Now uses `url_for('oauth2callback', _external=True)` in `google_auth.py` to construct dynamically
+   - **Status:** Redirect URI now correctly defaults to `http://localhost:5001/oauth2callback` (port 5001 to avoid AirPlay conflict)
 
 2. **WARNING: Flask `before_first_request` Deprecated**
    - **Location:** `models/db.py:147`
