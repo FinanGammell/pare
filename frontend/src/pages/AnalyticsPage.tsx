@@ -13,6 +13,131 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
+// Custom Tooltip Components
+const CustomPieTooltip = ({ active, payload }: any) => {
+  if (!active || !payload || payload.length === 0) return null;
+
+  const data = payload[0];
+  const { name, value, color, total } = data.payload || {};
+  const totalValue = total || payload.reduce((sum: number, p: any) => sum + (p.value || 0), 0);
+  const percentage = totalValue > 0 ? ((value / totalValue) * 100).toFixed(1) : "0.0";
+
+  return (
+    <div
+      style={{
+        backgroundColor: "rgba(15, 23, 42, 0.98)",
+        border: "1px solid rgba(99, 102, 241, 0.5)",
+        borderRadius: "8px",
+        padding: "12px 16px",
+        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
+        minWidth: "140px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+        <div
+          style={{
+            width: "12px",
+            height: "12px",
+            borderRadius: "50%",
+            backgroundColor: color,
+          }}
+        />
+        <span style={{ color: "#e2e8f0", fontSize: "0.875rem", fontWeight: 600 }}>
+          {name}
+        </span>
+      </div>
+      <div style={{ color: color, fontSize: "1.5rem", fontWeight: 700, marginBottom: "4px" }}>
+        {value.toLocaleString()}
+      </div>
+      <div style={{ color: "#64748b", fontSize: "0.75rem" }}>
+        {percentage}% of {totalValue.toLocaleString()} emails
+      </div>
+    </div>
+  );
+};
+
+const CustomBarTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload || payload.length === 0) return null;
+
+  const data = payload[0];
+  const { count, color } = data.payload;
+
+  return (
+    <div
+      style={{
+        backgroundColor: "rgba(15, 23, 42, 0.98)",
+        border: "1px solid rgba(99, 102, 241, 0.5)",
+        borderRadius: "8px",
+        padding: "12px 16px",
+        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
+        minWidth: "140px",
+      }}
+    >
+      <div style={{ color: "#94a3b8", fontSize: "0.75rem", marginBottom: "6px" }}>
+        {label}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div
+          style={{
+            width: "12px",
+            height: "12px",
+            borderRadius: "4px",
+            backgroundColor: color,
+          }}
+        />
+        <span style={{ color: "#e2e8f0", fontSize: "0.875rem", fontWeight: 600 }}>
+          Count:
+        </span>
+        <span style={{ color: "#22c55e", fontSize: "1.25rem", fontWeight: 700 }}>
+          {count.toLocaleString()}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+const CustomDonutTooltip = ({ active, payload }: any) => {
+  if (!active || !payload || payload.length === 0) return null;
+
+  const data = payload[0];
+  const { name, value, color } = data.payload;
+  const total = payload.reduce((sum: number, p: any) => sum + p.value, 0);
+  const percentage = ((value / total) * 100).toFixed(1);
+
+  return (
+    <div
+      style={{
+        backgroundColor: "rgba(15, 23, 42, 0.98)",
+        border: "1px solid rgba(99, 102, 241, 0.5)",
+        borderRadius: "8px",
+        padding: "12px 16px",
+        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
+        minWidth: "160px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+        <div
+          style={{
+            width: "12px",
+            height: "12px",
+            borderRadius: "50%",
+            backgroundColor: color,
+          }}
+        />
+        <span style={{ color: "#e2e8f0", fontSize: "0.875rem", fontWeight: 600 }}>
+          {name}
+        </span>
+      </div>
+      <div style={{ color: color, fontSize: "1.5rem", fontWeight: 700, marginBottom: "4px" }}>
+        {value.toLocaleString()}
+      </div>
+      <div style={{ color: "#64748b", fontSize: "0.75rem" }}>
+        {percentage}% of {total.toLocaleString()} emails
+      </div>
+    </div>
+  );
+};
+
 type Analytics = {
   total_emails: number;
   processed_emails: number;
@@ -84,6 +209,7 @@ export const AnalyticsPage: React.FC = () => {
         name: name.charAt(0).toUpperCase() + name.slice(1),
         value,
         color: getCategoryColor(name),
+        total: Object.values(category_counts).reduce((sum, v) => sum + v, 0),
       }))
     : [];
 
@@ -161,14 +287,7 @@ export const AnalyticsPage: React.FC = () => {
                       <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "rgba(15, 23, 42, 0.95)",
-                      border: "1px solid rgba(51, 65, 85, 0.5)",
-                      borderRadius: "8px",
-                      color: "#e2e8f0",
-                    }}
-                  />
+                  <Tooltip content={<CustomPieTooltip />} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -195,20 +314,12 @@ export const AnalyticsPage: React.FC = () => {
                     outerRadius={80}
                     paddingAngle={5}
                     dataKey="value"
-                    label={({ name, value }) => `${name}: ${value}`}
                   >
                     {processingData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "rgba(15, 23, 42, 0.95)",
-                      border: "1px solid rgba(51, 65, 85, 0.5)",
-                      borderRadius: "8px",
-                      color: "#e2e8f0",
-                    }}
-                  />
+                  <Tooltip content={<CustomDonutTooltip />} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -235,14 +346,7 @@ export const AnalyticsPage: React.FC = () => {
                   style={{ fontSize: "0.875rem" }}
                 />
                 <YAxis stroke="#94a3b8" style={{ fontSize: "0.875rem" }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "rgba(15, 23, 42, 0.95)",
-                    border: "1px solid rgba(51, 65, 85, 0.5)",
-                    borderRadius: "8px",
-                    color: "#e2e8f0",
-                  }}
-                />
+                <Tooltip content={<CustomBarTooltip />} />
                 <Bar dataKey="count" radius={[8, 8, 0, 0]}>
                   {actionItemsData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
