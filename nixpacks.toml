@@ -1,0 +1,44 @@
+[phases.setup]
+nixPkgs = ["nodejs-18_x", "python39"]
+
+[phases.install]
+cmds = [
+  "echo '=== Installing dependencies ==='",
+  "echo 'Current directory:' && pwd",
+  "echo 'Listing root:' && ls -la",
+  "echo 'Verifying frontend directory...'",
+  "test -d frontend || (echo 'ERROR: frontend directory not found' && exit 1)",
+  "echo 'Installing Node.js dependencies...'",
+  "cd frontend && npm install",
+  "echo 'Verifying frontend node_modules was created...'",
+  "test -d frontend/node_modules || (echo 'ERROR: node_modules not created' && exit 1)",
+  "echo 'Node.js dependencies installed successfully'",
+  "echo 'Installing Python dependencies...'",
+  "pip install -r requirements.txt",
+  "echo '=== Install phase complete ==='"
+]
+
+[phases.build]
+cmds = [
+  "echo '=== Building frontend ==='",
+  "echo 'Current directory:' && pwd",
+  "echo 'Verifying frontend directory exists...'",
+  "test -d frontend || (echo 'ERROR: frontend directory not found' && exit 1)",
+  "echo 'Checking for package.json...'",
+  "test -f frontend/package.json || (echo 'ERROR: frontend/package.json not found' && exit 1)",
+  "echo 'Building frontend...'",
+  "cd frontend && npm run build",
+  "echo 'Build command completed. Checking for dist directory...'",
+  "test -d frontend/dist || (echo 'ERROR: frontend/dist directory not found after build' && exit 1)",
+  "echo 'Verifying dist contents...'",
+  "ls -la frontend/dist/",
+  "test -f frontend/dist/index.html || (echo 'ERROR: frontend/dist/index.html not found' && exit 1)",
+  "echo 'Checking for assets directory...'",
+  "ls -la frontend/dist/assets/ || echo 'WARNING: assets directory not found (may be OK)'",
+  "echo '=== Build phase complete ==='",
+  "echo 'Final verification: dist directory exists at:'",
+  "ls -ld frontend/dist || exit 1"
+]
+
+[start]
+cmd = "gunicorn app:app --preload --worker-class sync --timeout 120 --bind 0.0.0.0:$PORT"

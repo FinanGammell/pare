@@ -1,0 +1,14 @@
+{
+  "name": "pare-email-suite",
+  "version": "1.0.0",
+  "description": "Pare Email Suite - Flask backend with React frontend",
+  "engines": {
+    "node": "18.x",
+    "npm": "9.x"
+  },
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "postinstall": "cd frontend && npm install"
+  }
+}
+
